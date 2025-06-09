@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import streamlit.components.v1 as components
 
-# Config page full width
+# Config page
 st.set_page_config(layout="wide")
 
 # Constantes
@@ -59,8 +59,6 @@ def fetch_btc_to_eur():
         return None
 
 def is_valid_btc_address(address):
-    # Validation simple (bech32 ou base58)
-    # Améliore selon besoin ou utilise une lib externe
     if address.startswith(("bc1", "1", "3")) and 25 <= len(address) <= 42:
         return True
     return False
@@ -73,50 +71,27 @@ def render_progress_table(balance_btc, btc_to_eur):
         "1 BTC": 1.0,
     }
 
-    def get_progress_red_yellow_green(percent):
-        full_blocks = int(percent // 10)
-        partial_block = 1 if (percent % 10) >= 5 else 0
-        empty_blocks = 10 - full_blocks - partial_block
-
-        bar = ""
-        for i in range(full_blocks):
-            if i < 3:  # premiers 3 blocs = rouge
-                bar += "🔴"
-            elif i < 6:  # blocs 4-6 = jaune
-                bar += "🟡"
-            else:       # blocs 7-10 = vert
-                bar += "🟢"
-
-        if partial_block:
-            if full_blocks < 3:
-                bar += "🔴"
-            elif full_blocks < 6:
-                bar += "🟡"
-            else:
-                bar += "🟢"
-
-        bar += "⚪" * empty_blocks
-
-        return f"{bar} ({percent:.0f}%)"
-
     rows_html = ""
     for label, target in targets.items():
         progress = min(balance_btc / target, 1.0)
-        percent = (balance_btc / target) * 100
+        percent = progress * 100
         missing_btc = max(target - balance_btc, 0)
         missing_eur = missing_btc * btc_to_eur if btc_to_eur else None
         missing_str = f"{missing_btc:.8f} BTC / €{missing_eur:.2f}" if missing_eur else f"{missing_btc:.8f} BTC / €?"
 
+        color = "#ff4b4b" if progress >= 1.0 else "#0a84ff"
+
+        # Icône médaille si seuil franchi, sinon progression en %
         if progress >= 1.0:
-            status = "🥇"  # Médaille si atteint
+            icon_html = "🏅"
         else:
-            status = get_progress_red_yellow_green(percent)
+            icon_html = f"{percent:.0f}%"
 
         rows_html += f"""
         <tr>
-            <td>{label}</td>
+            <td>{icon_html} {label}</td>
             <td>{balance_btc:.8f} / {target:.8f} BTC</td>
-            <td style="font-weight:bold; font-size: 1.2rem;">{status}</td>
+            <td>{percent:.2f}%</td>
             <td>{missing_str}</td>
         </tr>
         """
@@ -145,7 +120,6 @@ def render_progress_table(balance_btc, btc_to_eur):
             padding: 12px;
             text-align: left;
             border-bottom: 1px solid #cbd5e1;
-            vertical-align: middle;
         }}
     </style>
     <table>
@@ -153,7 +127,7 @@ def render_progress_table(balance_btc, btc_to_eur):
             <tr>
                 <th>Palier</th>
                 <th>Solde actuel / Seuil</th>
-                <th>Statut</th>
+                <th>Progression</th>
                 <th>Manquant</th>
             </tr>
         </thead>
@@ -163,14 +137,13 @@ def render_progress_table(balance_btc, btc_to_eur):
     </table>
     """
 
-    components.html(table_html, height=300, scrolling=False)
-
+    components.html(table_html, height=250, scrolling=False)
 
 def main():
     st.title("Visualisation UTXO Wallet Bitcoin")
     st.markdown("""<style>section.main > div.block-container { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
 
-    # --- Sidebar wallets ---
+    # Sidebar wallets
     st.sidebar.header("Wallets")
     with st.sidebar.form("add_wallet_form"):
         new_name = st.text_input("Nom du wallet")
@@ -197,11 +170,10 @@ def main():
             st.sidebar.success(f"Wallet '{selected_wallet}' supprimé.")
             st.experimental_rerun()
 
-    # --- Affichage nom wallet ---
     st.markdown(f"### 🎯 Wallet sélectionné : **{selected_wallet}**")
     st.markdown(f"`{wallet_address}`")
 
-    # --- Récupération des données ---
+    # Récupération données
     utxos = fetch_utxos(wallet_address)
     latest_block = fetch_latest_block_height()
     btc_to_eur = fetch_btc_to_eur()
@@ -210,63 +182,58 @@ def main():
         st.info("Pas d'UTXO trouvés pour ce wallet.")
         return
 
-    # --- Solde total ---
     balance_btc = sum(utxo.get("value", 0) for utxo in utxos) / SATOSHIS_PER_BTC
-    balance_eur = balance_btc * btc_to_eur if btc_to_eur else None
 
-    # --- Barres de progression ---
-    render_progress_table(balance_btc, btc_to_eur)
+    # Onglets résumé et liste UTXO
+    tab1, tab2 = st.tabs(["Home", "Liste UTXO"])
 
-    # --- Congestion réseau ---
-    congestion_data = fetch_congestion_data()
-    if congestion_data:
-        st.markdown("### État de congestion réseau (sats/vByte)")
-        for b in congestion_data[:3]:
-            st.write(f"Bloc {b.get('height', '?')} → {b.get('fee', 0):.1f}")
-    else:
-        st.warning("Impossible de récupérer la congestion réseau.")
+    with tab1:
+        render_progress_table(balance_btc, btc_to_eur)
 
-    # --- Taux BTC -> EUR ---
-    if btc_to_eur:
-        st.markdown(f"Taux BTC → EUR : €{btc_to_eur:.2f}")
-        st.markdown(f"Balance estimée : €{balance_eur:,.2f}")
-    else:
-        st.warning("Impossible de récupérer le taux BTC → EUR.")
-
-    # Tri des UTXO
-    utxos_sorted = sorted(
-        utxos,
-        key=lambda u: u.get("status", {}).get("block_height", 0),
-        reverse=True
-    )
-
-    # --- Affichage UTXO ---
-    st.subheader("UTXOs")
-    utxo_rows = []
-    for utxo in utxos_sorted:
-        value_sats = utxo.get("value", 0)
-        value_btc = value_sats / SATOSHIS_PER_BTC
-        block_height = utxo.get("status", {}).get("block_height", None)
-        dust = value_sats < DUST_THRESHOLD
-        fees_btc = 0.0
-
-        if block_height and latest_block:
-            blocks_old = latest_block - block_height
-            age_days = blocks_old / BLOCKS_PER_DAY
-            age_str = f"{age_days:.1f} jours"
+        congestion_data = fetch_congestion_data()
+        if congestion_data:
+            st.markdown("### État de congestion réseau (sats/vByte)")
+            for b in congestion_data[:3]:
+                st.write(f"Bloc {b.get('height', '?')} → {b.get('fee', 0):.1f}")
         else:
-            age_str = "Non confirmé"
+            st.warning("Impossible de récupérer la congestion réseau.")
 
-        utxo_rows.append({
-            "Txid": utxo.get("txid"),
-            "Vout": utxo.get("vout"),
-            "Valeur (BTC)": f"{value_btc:.8f}",
-            "Âge": age_str,
-            "Dust": "Oui" if dust else "Non",
-            "Frais (BTC)": f"{fees_btc:.8f}"
-        })
+        if btc_to_eur:
+            st.markdown(f"Taux BTC → EUR : €{btc_to_eur:.2f}")
+            st.markdown(f"Balance estimée : €{balance_btc * btc_to_eur:,.2f}")
+        else:
+            st.warning("Impossible de récupérer le taux BTC → EUR.")
 
-    st.table(utxo_rows)
+    with tab2:
+        utxos_sorted = sorted(
+            utxos,
+            key=lambda u: u.get("status", {}).get("block_height", 0),
+            reverse=True
+        )
+        utxo_rows = []
+        for utxo in utxos_sorted:
+            value_sats = utxo.get("value", 0)
+            value_btc = value_sats / SATOSHIS_PER_BTC
+            block_height = utxo.get("status", {}).get("block_height", None)
+            dust = value_sats < DUST_THRESHOLD
+
+            if block_height and latest_block:
+                blocks_old = latest_block - block_height
+                age_days = blocks_old / BLOCKS_PER_DAY
+                age_str = f"{age_days:.1f} jours"
+            else:
+                age_str = "Non confirmé"
+
+            utxo_rows.append({
+                "Txid": utxo.get("txid"),
+                "Vout": utxo.get("vout"),
+                "Valeur (BTC)": f"{value_btc:.8f}",
+                "Âge": age_str,
+                "Dust": "Oui" if dust else "Non",
+                "Frais (BTC)": f"0.00000000"
+            })
+
+        st.dataframe(utxo_rows, use_container_width=True)
 
 if __name__ == "__main__":
     main()
